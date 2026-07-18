@@ -1,0 +1,3 @@
+#!/bin/bash
+price=$(curl -s -H "User-Agent: Mozilla/5.0" "https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=1d" | jq '.chart.result[0].meta.regularMarketPrice')
+echo "SPY is currently \$$price"
