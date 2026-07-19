@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+import os
+import requests
+import psycopg2
+import datetime
+# --- config ---
+SYMBOLS = ["^GSPC", "^NDX", "SPY", "QQQ", "NFLX", "UBER"]
+RANGE = "10y"
+
+DB = {
+    "host": "192.168.4.184",
+    "port": 44733,
+    "dbname": "market",
+    "user": "brozo",
+    "password": os.environ["DB_PASSWORD"],
+}
+
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+conn = psycopg2.connect(**DB)
+cur = conn.cursor()
+
+for symbol in SYMBOLS:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    params = {"range": RANGE, "interval": "1d"}
+    resp = requests.get(url, params=params, headers=HEADERS)
+    data = resp.json()
+
+    result = data["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    quote = result["indicators"]["quote"][0]
+
+    rows = 0
+    for i, ts in enumerate(timestamps):
+        if quote["close"][i] is None:
+            continue  # skip holidays/bad rows
+        day = datetime.date.fromtimestamp(ts)
+        cur.execute("""
+            INSERT INTO daily_prices (symbol, date, open, high, low, close, volume)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (symbol, date) DO UPDATE SET
+                open = EXCLUDED.open, high = EXCLUDED.high,
+                low = EXCLUDED.low, close = EXCLUDED.close,
+                volume = EXCLUDED.volume
+        """, (symbol, day, quote["open"][i], quote["high"][i],
+              quote["low"][i], quote["close"][i], quote["volume"][i]))
+        rows += 1
+
+    conn.commit()
+    print(f"{symbol}: {rows} rows")
+
+cur.close()
+conn.close()
+print("Stocks Uploaded to Defiant")
