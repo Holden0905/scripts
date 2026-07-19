@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+import os
+import psycopg2
+from flask import Flask, jsonify, render_template_string, request
+
+app = Flask(__name__)
+
+DB = {
+    "host": "192.168.4.184",
+    "port": 44733,
+    "dbname": "market",
+    "user": "brozo",
+    "password": os.environ["DB_PASSWORD"],
+}
+
+SYMBOLS = ["^GSPC", "^NDX", "SPY", "QQQ", "NFLX", "UBER"]
+EMA_PERIODS = [5, 8, 21, 50]
+
+def ema(closes, period):
+    """Standard EMA over full history. Returns list same length as closes."""
+    k = 2 / (period + 1)
+    out = [closes[0]]
+    for c in closes[1:]:
+        out.append(c * k + out[-1] * (1 - k))
+    return out
+
+PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Defiant Stock Charts</title>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; margin: 2em; }
+    select { font-size: 1.1em; padding: 4px; margin-bottom: 1em; margin-right: 8px; }
+    label { margin-right: 14px; cursor: pointer; }
+    .sw { display: inline-block; width: 10px; height: 10px; margin-right: 4px; }
+  </style>
+</head>
+<body>
+  <h2><span id="label"></span></h2>
+  <select id="symbol">
+    {% for s in symbols %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+  </select>
+  <select id="days">
+    <option value="5">5 days</option>
+    <option value="8">8 days</option>
+    <option value="21">21 days</option>
+    <option value="50" selected>50 days</option>
+  </select>
+  <span id="emaboxes">
+    <label><span class="sw" style="background:#f0a020"></span><input type="checkbox" data-p="5"> EMA 5</label>
+    <label><span class="sw" style="background:#40c0ff"></span><input type="checkbox" data-p="8" checked> EMA 8</label>
+    <label><span class="sw" style="background:#c060ff"></span><input type="checkbox" data-p="21"> EMA 21</label>
+    <label><span class="sw" style="background:#ffffff"></span><input type="checkbox" data-p="50"> EMA 50</label>
+  </span>
+  <div id="chart" style="width: 900px; height: 450px;"></div>
+  <script>
+    const COLORS = { 5: '#f0a020', 8: '#40c0ff', 21: '#c060ff', 50: '#ffffff' };
+    const chart = LightweightCharts.createChart(document.getElementById('chart'),
+      { layout: { background: { color: '#111' }, textColor: '#eee' },
+        grid: { vertLines: { color: '#222' }, horzLines: { color: '#222' } } });
+    const candles = chart.addCandlestickSeries();
+    const emaSeries = {};   // period -> line series (created on demand)
+    let lastData = null;    // remember latest fetch so toggles don't refetch
+
+    function checkedPeriods() {
+      return [...document.querySelectorAll('#emaboxes input:checked')]
+        .map(cb => cb.dataset.p);
+    }
+
+    function drawEmas() {
+      if (!lastData) return;
+      const want = checkedPeriods();
+      for (const p of ['5','8','21','50']) {
+        if (want.includes(p)) {
+          if (!emaSeries[p]) {
+            emaSeries[p] = chart.addLineSeries(
+              { color: COLORS[p], lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+          }
+          emaSeries[p].setData(lastData.emas[p]);
+        } else if (emaSeries[p]) {
+          emaSeries[p].setData([]);
+        }
+      }
+    }
+
+    async function load() {
+      const sym = document.getElementById('symbol').value;
+      const days = document.getElementById('days').value;
+      const resp = await fetch('/data/' + encodeURIComponent(sym) + '?days=' + days);
+      lastData = await resp.json();
+      candles.setData(lastData.candles);
+      drawEmas();
+      document.getElementById('label').textContent = 'Last ' + days + ' Days — ' + sym;
+      chart.timeScale().fitContent();
+    }
+
+    document.getElementById('symbol').addEventListener('change', load);
+    document.getElementById('days').addEventListener('change', load);
+    document.querySelectorAll('#emaboxes input').forEach(cb => cb.addEventListener('change', drawEmas));
+    load();
+  </script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def index():
+    return render_template_string(PAGE, symbols=SYMBOLS)
+
+@app.route("/data/<symbol>")
+def data(symbol):
+    days = request.args.get("days", "50")
+    if days not in ("5", "8", "21", "50"):
+        days = "50"
+    n = int(days)
+
+    conn = psycopg2.connect(**DB)
+    cur = conn.cursor()
+    # Pull LONG history (oldest first) so EMAs are warmed up properly
+    cur.execute("""
+        SELECT date, open, high, low, close
+        FROM daily_prices
+        WHERE symbol = %s
+        ORDER BY date ASC
+    """, (symbol,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    closes = [float(r[4]) for r in rows]
+    dates = [str(r[0]) for r in rows]
+
+    # Compute each EMA over full history, then slice to the visible window
+    emas = {}
+    for p in EMA_PERIODS:
+        full = ema(closes, p)
+        emas[str(p)] = [
+            {"time": t, "value": round(v, 2)}
+            for t, v in zip(dates[-n:], full[-n:])
+        ]
+
+    candles = [
+        {"time": str(d), "open": o, "high": h, "low": l, "close": c}
+        for d, o, h, l, c in rows[-n:]
+    ]
+
+    return jsonify({"candles": candles, "emas": emas})
+
+app.run(host="0.0.0.0", port=5000)
