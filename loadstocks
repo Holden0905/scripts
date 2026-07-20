@@ -8,7 +8,7 @@ SYMBOLS = ["^GSPC", "^NDX", "SPY", "QQQ", "NFLX", "UBER"]
 RANGE = "10y"
 
 DB = {
-    "host": "192.168.4.184",
+    "host": os.environ["DB_HOST"],
     "port": 44733,
     "dbname": "market",
     "user": "brozo",
