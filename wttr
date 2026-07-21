@@ -1,0 +1,18 @@
+#!/bin/bash
+case "$1" in
+-h | --help)
+        echo "wttr — weather forecasts"
+        echo "  (no args)      full 3-day panel for Ottawa,IL"
+        echo "  -l LOCATION    full panel for LOCATION (e.g. -l Denver,CO)"
+        echo "  -5             clean 5-day Ottawa,IL forecast"
+        ;;
+-l | --location)
+        curl -s "wttr.in/$2"
+        ;;
+-5)
+        curl -s "https://api.open-meteo.com/v1/forecast?latitude=41.35&longitude=-88.85&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&temperature_unit=fahrenheit&timezone=America/Chicago&forecast_days=5" | jq -r '.daily | [.time, .temperature_2m_max, .temperature_2m_min, .precipitation_probability_max] | transpose[] | "\(.[0])  High \(.[1])°F  Low \(.[2])°F  Rain \(.[3])%"'
+        ;;
+*)
+        curl -s "wttr.in/Ottawa,IL"
+        ;;
+esac
